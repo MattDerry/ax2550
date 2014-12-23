@@ -19,14 +19,16 @@ ros::Publisher encoder_pub;
 tf::TransformBroadcaster *odom_broadcaster;
 
 static double ENCODER_RESOLUTION = 250*4;
+static double METERS_PER_TICK = 0.00020991;
+static double VELOCITY_MULTIPLIER = 0.008448;
 double wheel_circumference = 0.0;
 double wheel_base_length = 0.0;
 double wheel_diameter = 0.0;
 double encoder_poll_rate;
 std::string odom_frame_id;
 size_t error_count;
-double target_speed = 0.0;
-double target_direction = 0.0;
+double channel_1_value = 0.0;
+double channel_2_value = 0.0;
 
 double rot_cov = 0.0;
 double pos_cov = 0.0;
@@ -52,38 +54,23 @@ double wrapToPi(double angle) {
 void cmd_velCallback(const geometry_msgs::Twist::ConstPtr& msg) {
     if(mc == NULL || !mc->isConnected())
         return;
-    // Convert mps to rpm
-    double A = msg->linear.x;
-    double B = msg->angular.z * (wheel_base_length/2.0);
-    
-    double A_rpm = A * (60.0 / (M_PI*wheel_diameter));
-    double B_rpm = B * (60.0 / (M_PI*wheel_diameter));
-    
-    // Convert rpm to relative
-    double A_rel = (A_rpm * 250 * 64) / 58593.75;
-    double B_rel = (B_rpm * 250 * 64) / 58593.75;
-    
-    // ROS_INFO("Arpm: %f, Arel: %f, Brpm: %f, Brel: %f", A_rpm, A_rel, B_rpm, B_rel);
-    
-    // Bounds check
-    if(A_rel > A_MAX)
-        A_rel = A_MAX;
-    if(A_rel < -1*A_MAX)
-        A_rel = -1*A_MAX;
-    if(B_rel > B_MAX)
-        B_rel = B_MAX;
-    if(B_rel < -1*B_MAX)
-        B_rel = -1*B_MAX;
 
-    // Set the targets
-    target_speed = A_rel;
-    target_direction = B_rel;
+    // Convert twist to wheel velocities for differential drive
+    double right_wheel_vel = msg->linear.x + msg->angular.z * wheel_base_length/2;
+    double left_wheel_vel = msg->linear.x - msg->angular.z * wheel_base_length/2;
+
+    // Convert wheel velocities from meters per second to relative velocity for roboteq
+    double right_relative = (right_wheel_vel/METERS_PER_TICK) * VELOCITY_MULTIPLIER;
+    double left_relative = (left_wheel_vel/METERS_PER_TICK) * VELOCITY_MULTIPLIER;
+
+    channel_1_value = left_relative;
+    channel_2_value = right_relative;
 }
 
 void controlLoop() {
-    // ROS_INFO("Relative move commands: %f %f", target_speed, target_direction);
+    // ROS_INFO("Relative move commands: %f %f", channel_1_value, channel_2_value);
     try {
-    	mc->move(target_speed, target_direction);
+    	mc->move(channel_1_value, channel_2_value);
     } catch(const std::exception &e) {
     	if (string(e.what()).find("did not receive") != string::npos
          || string(e.what()).find("failed to receive an echo") != string::npos) {
@@ -115,7 +102,7 @@ void queryEncoders() {
     // Make sure we are connected
     if(!ros::ok() || mc == NULL || !mc->isConnected())
         return;
-    
+
     long encoder1, encoder2;
     ros::Time now = ros::Time::now();
     // Retreive the data
@@ -128,61 +115,40 @@ void queryEncoders() {
         if (string(e.what()).find("failed to receive ") != string::npos
          && error_count != 10) {
             error_count += 1;
-            ROS_WARN("Error reading the Encoders: %s", e.what());    
+            ROS_WARN("Error reading the Encoders: %s", e.what());
         } else {
             ROS_ERROR("Error reading the Encoders: %s", e.what());
             mc->disconnect();
         }
         return;
     }
-    
+
     double delta_time = (now - prev_time).toSec();
     prev_time = now;
-    
+
     // Convert to mps for each wheel from delta encoder ticks
-    double left_v = encoder1 * 2*M_PI / ENCODER_RESOLUTION;
-    left_v /= delta_time;
-    // left_v *= encoder_poll_rate;
-    double right_v = -encoder2 * 2*M_PI / ENCODER_RESOLUTION;
-    right_v /= delta_time;
-    // right_v *= encoder_poll_rate;
-    
+    double deltaD = (encoder1 + (encoder2))/2 * METERS_PER_TICK;
+    double deltaTheta = ((encoder1 - (encoder2)) / wheel_base_length) * METERS_PER_TICK;
+    double v = deltaD/delta_time;
+    double w = deltaTheta/delta_time;
+    prev_w = wrapToPi(prev_w + deltaTheta);
+    prev_x = prev_x + deltaD * cos(prev_w);
+    prev_y = prev_y + deltaD * sin(prev_w);
+
     ax2550::StampedEncoders encoder_msg;
-    
+
     encoder_msg.header.stamp = now;
     encoder_msg.header.frame_id = "base_link";
     encoder_msg.encoders.time_delta = delta_time;
     encoder_msg.encoders.left_wheel = encoder1;
     encoder_msg.encoders.right_wheel = -encoder2;
-    
+
     encoder_pub.publish(encoder_msg);
 
-    double v = 0.0;
-    double w = 0.0;
-    
-    double r_L = wheel_diameter/2.0;
-    double r_R = wheel_diameter/2.0;
-    
-    v += r_L/2.0 * left_v;
-    v += r_R/2.0 * right_v;
-
-    w += r_R/wheel_base_length * right_v;
-    w -= r_L/wheel_base_length * left_v;
-
-    
-    // Update the states based on model and input
-    prev_x += delta_time * v
-                          * cos(prev_w + delta_time * (w/2.0));
-    
-    prev_y += delta_time * v
-                          * sin(prev_w + delta_time * (w/2.0));
-    prev_w += delta_time * w;
-    prev_w = wrapToPi(prev_w);
-    
     // ROS_INFO("%f", prev_w);
-    
+
     geometry_msgs::Quaternion quat = tf::createQuaternionMsgFromYaw(prev_w);
-    
+
     // Populate the msg
     nav_msgs::Odometry odom_msg;
     odom_msg.header.stamp = now;
@@ -196,25 +162,25 @@ void queryEncoders() {
     odom_msg.pose.covariance[21] = 1e100;
     odom_msg.pose.covariance[28] = 1e100;
     odom_msg.pose.covariance[35] = rot_cov;
-    
+
     // odom_msg.twist.twist.linear.x = v/delta_time;
     odom_msg.twist.twist.linear.x = v;
     // odom_msg.twist.twist.angular.z = w/delta_time;
     odom_msg.twist.twist.angular.z = w;
-    
+
     odom_pub.publish(odom_msg);
-    
+
     // TODO: Add TF broadcaster
     // geometry_msgs::TransformStamped odom_trans;
     //     odom_trans.header.stamp = now;
     //     odom_trans.header.frame_id = "odom";
     //     odom_trans.child_frame_id = "base_footprint";
-    // 
+    //
     //     odom_trans.transform.translation.x = prev_x;
     //     odom_trans.transform.translation.y = prev_y;
     //     odom_trans.transform.translation.z = 0.0;
     //     odom_trans.transform.rotation = quat;
-    //     
+    //
     //     odom_broadcaster->sendTransform(odom_trans);
 }
 
@@ -223,42 +189,42 @@ int main(int argc, char **argv) {
     ros::init(argc, argv, "ax2550_node");
     ros::NodeHandle n;
     prev_time = ros::Time::now();
-    
+
     // Serial port parameter
     std::string port;
     n.param("serial_port", port, std::string("/dev/motor_controller"));
-    
+
     // Wheel diameter parameter
     n.param("wheel_diameter", wheel_diameter, 0.3048);
-    
+
     wheel_circumference = wheel_diameter * M_PI;
-    
+
     // Wheel base length
     n.param("wheel_base_length", wheel_base_length, 0.9144);
-    
+
     // Odom Frame id parameter
     n.param("odom_frame_id", odom_frame_id, std::string("odom"));
 
     // Load up some covariances from parameters
     n.param("rotation_covariance",rot_cov, 1.0);
     n.param("position_covariance",pos_cov, 1.0);
-    
+
     // Setup Encoder polling
     n.param("encoder_poll_rate", encoder_poll_rate, 25.0);
     ros::Rate encoder_rate(encoder_poll_rate);
-    
+
     // Odometry Publisher
     odom_pub = n.advertise<nav_msgs::Odometry>("odom", 5);
-    
+
     // Encoder Publisher
     encoder_pub = n.advertise<ax2550::StampedEncoders>("encoders", 5);
-    
+
     // TF Broadcaster
     odom_broadcaster = new tf::TransformBroadcaster;
-    
+
     // cmd_vel Subscriber
     ros::Subscriber sub = n.subscribe("cmd_vel", 1, cmd_velCallback);
-    
+
     // Spinner
     ros::AsyncSpinner spinner(1);
     spinner.start();
@@ -300,11 +266,11 @@ int main(int argc, char **argv) {
         	if (!ros::ok())
         		break;
         }
-        target_speed = 0.0;
-        target_direction = 0.0;
+        channel_1_value = 0.0;
+        channel_2_value = 0.0;
     }
 
     spinner.stop();
-    
+
     return 0;
 }
