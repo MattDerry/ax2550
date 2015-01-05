@@ -304,24 +304,12 @@ AX2550::sync_ () {
   boost::mutex::scoped_lock lock(this->mc_mutex);
   // Reset the motor controller
   this->serial_port_->write("%rrrrrr\r");
-  // Wait for an R/C Message
-  {
-    BufferedFilterPtr rc_msg_filt =
-      this->serial_listener_.createBufferedFilter(
-        SerialListener::startsWith(":"));
-    rc_msg_filt->clear();
-    if (rc_msg_filt->wait(2000).empty()) {
-      AX2550_THROW(SynchronizationException,
-        "did not receive an R/C message after reset");
-    }
-  }
-  // Write \r to the port until in serial mode
+  // Wait for OK
   BufferedFilterPtr ok_filt =
     this->serial_listener_.createBufferedFilter(
       SerialListener::contains("OK"));
   bool got_ok = false;
-  for (int i = 0; i < 20; ++i) {
-    this->serial_port_->write("\r");
+  for (int i = 0; i < 50; ++i) {
     if (!ok_filt->wait(50).empty()) {
       got_ok = true;
       break;
@@ -396,8 +384,3 @@ AX2550::setupFilters_ () {
   // this->rc_msg_filt_ = this->serial_listener_.createBufferedFilter(
   //   SerialListener::startsWith(":"));
 }
-
-
-
-
-
