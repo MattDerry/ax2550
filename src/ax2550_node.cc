@@ -128,7 +128,7 @@ void queryEncoders() {
 
     // Convert to mps for each wheel from delta encoder ticks
     double deltaD = (encoder1 + (encoder2))/2 * METERS_PER_TICK;
-    double deltaTheta = ((encoder1 - (encoder2)) / wheel_base_length) * METERS_PER_TICK;
+    double deltaTheta = ((encoder2 - (encoder1)) / wheel_base_length) * METERS_PER_TICK;
     double v = deltaD/delta_time;
     double w = deltaTheta/delta_time;
     prev_w = wrapToPi(prev_w + deltaTheta);
