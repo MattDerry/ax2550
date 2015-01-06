@@ -171,17 +171,15 @@ void queryEncoders() {
     odom_pub.publish(odom_msg);
 
     // TODO: Add TF broadcaster
-    // geometry_msgs::TransformStamped odom_trans;
-    //     odom_trans.header.stamp = now;
-    //     odom_trans.header.frame_id = "odom";
-    //     odom_trans.child_frame_id = "base_footprint";
-    //
-    //     odom_trans.transform.translation.x = prev_x;
-    //     odom_trans.transform.translation.y = prev_y;
-    //     odom_trans.transform.translation.z = 0.0;
-    //     odom_trans.transform.rotation = quat;
-    //
-    //     odom_broadcaster->sendTransform(odom_trans);
+    geometry_msgs::TransformStamped odom_trans;
+    odom_trans.header.stamp = now;
+    odom_trans.header.frame_id = "odom";
+    odom_trans.child_frame_id = "base_footprint";
+    odom_trans.transform.translation.x = prev_x;
+    odom_trans.transform.translation.y = prev_y;
+    odom_trans.transform.translation.z = 0.0;
+    odom_trans.transform.rotation = quat;
+    odom_broadcaster->sendTransform(odom_trans);
 }
 
 int main(int argc, char **argv) {
